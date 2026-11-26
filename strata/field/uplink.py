@@ -140,3 +140,15 @@ class Uplink:
         if type(number) is not int or number < 1:
             raise unavailable("Vault did not confirm a revision number")
         return number
+
+
+# 代收转交客户端的同义导出名。
+from strata.field.agent import HttpGateway as _RelayGateway  # noqa: E402
+
+RelayUplink = _RelayGateway
+RelayClient = _RelayGateway
+HandoffClient = _RelayGateway
+AgentClient = _RelayGateway
+
+__all__ = ["Client", "Uplink", "Accepted", "RelayUplink", "RelayClient",
+           "HandoffClient", "AgentClient"]

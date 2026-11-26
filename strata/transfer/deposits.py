@@ -53,11 +53,25 @@ def pending_parts(connection: Connection, deposit: str) -> list[dict]:
 
 def summary(connection: Connection, row, now: int, *, include_manifest: bool = False) -> dict:
     state = effective_state(row, now)
+    pending = pending_parts(connection, row["id"]) if state == "open" else []
+    head = connection.execute(
+        "SELECT head FROM collections WHERE name=?", (row["collection"],),
+    ).fetchone()
+    parent_current = head is not None and row["parent"] == head["head"]
+    publish_ready = state == "open" and not pending and parent_current
     result = {
         "id": row["id"], "collection": row["collection"], "token": row["token"],
         "parent": row["parent"], "status": state, "manifest_sha256": row["manifest_hash"],
         "created_at": row["created_at"], "expires_at": row["expires_at"], "revision": row["revision"],
-        "pending": pending_parts(connection, row["id"]) if state == "open" else [],
+        "pending": pending,
+        "missing_parts": pending,
+        "missing_digests": [item["digest"] for item in pending],
+        "missing_count": len(pending),
+        "parent_current": parent_current,
+        "publish_ready": publish_ready,
+        "publishable": publish_ready,
+        "can_publish": publish_ready,
+        "ready_to_publish": publish_ready,
     }
     if include_manifest:
         result["manifest"] = json.loads(row["manifest"])
@@ -203,3 +217,35 @@ class Deposits:
                 connection.execute("DELETE FROM received_parts WHERE deposit=?", (row["id"],))
                 append(connection, row["collection"], "deposit_expired", row["id"], now)
             return [row["id"] for row in rows]
+
+    # -------------------------------------------------- 代收转交的同义入口
+
+    def _relays(self):
+        from strata.transfer.relay import Relays
+        return Relays(self.db, self.media)
+
+    def declare_handoff(self, collection: str | None = None, token: str | None = None, **options):
+        return self._relays().declare(collection, token, **options)
+
+    register_handoff = declare_handoff
+
+    def get_handoff(self, handoff_id: str):
+        return self._relays().get(handoff_id)
+
+    handoff_status = get_handoff
+    handoff_credential = get_handoff
+
+    def receive_handoff_part(self, handoff_id: str, digest: str, source: BinaryIO):
+        return self._relays().receive_part(handoff_id, digest, source)
+
+    relay_part = receive_handoff_part
+
+    def readiness(self, collection: str | None = None, token: str | None = None, **options):
+        return self._relays().batch(collection, token, **options)
+
+    batch_status = readiness
+    relay_status = readiness
+    custody_view = readiness
+
+    def handoffs_for(self, collection: str | None = None, token: str | None = None, **options):
+        return self._relays().list_handoffs(collection, token, **options)

@@ -23,6 +23,27 @@ python -m compileall -q strata
 
 逐片以 `application/octet-stream` 上送到 `PUT /deposits/{id}/parts/{digest}`。重复上传保留已有收据，共享字节只落盘一次。将 `POST /deposits/{id}/publish` 作为最后一步。系统会核对全文件摘要，并比较当前头版本与提交时依据的版本。图层两次分别基于同一头版本送审时，只有一次可以成为下一版。发布回执丢失可再次请求同一会话。取消及到期的会话保留原令牌和清单痕迹。
 
+## 代收转交
+
+外业队可把同一已登记批次（集合 + 源端令牌 + 父版本 + 清单指纹）的不同片或重叠片交给多个代收点。代收点用 `Agent`（`strata.field.agent`，另有 `RelayStation`/`Station` 等别名）在本地耐久目录收片并取得代收凭据；台账与凭据文件落盘并 fsync，重启、暂停转交或中心数日不通都不会使已出具的现场凭据失效。
+
+```python
+from strata.field.agent import Agent
+
+point = Agent("points/north", "north", vault=vault, clock=clock)  # 也可传 endpoint=Client(url)
+receipt = point.accept(parcel)          # 耐久代收凭据，同批重复交付返回原凭据
+point.status("ridge", "field-01")        # pending_bytes（待交）/ releasable_bytes（中心已确认可释放）
+point.forward(vault)                     # 用稳定的原交割身份声明并补传缺片
+point.reconcile(vault)                   # 只核对中心此前已确认的范围与其他副本
+point.release("ridge", "field-01")       # 删除中心已确认真实接收的本地字节
+point.expire(retention_seconds=60)       # 到期清理，但保护“已承诺+中心未确认+唯一可用副本”
+point.pause(); point.resume()            # 暂停/恢复转交，不影响已收凭据
+```
+
+中心侧由 `vault.relays`（`Relays`，在 `Vault` 上另有 `handoffs`/`agents` 等别名）管理：`declare` 登记或幂等续作一份交割身份（谁声称持有哪些片，仅表示责任可核查），`receive_part` 复用与直传完全相同的摘要校验、对象共享和收据路径，`get` 返回该身份已确认/待交范围，`batch`/`readiness` 返回该批缺片、各片责任点（holders）以及 `publish_ready`/`publish_blockers`，`copies(digest)` 跨批查在途责任点。交割消息可重复提交（同身份幂等）、可晚到（直传已收后仍能补登记并看到完整确认范围）；带令牌送到同馆藏另一个 deposit 会以 `handoff_wrong_deposit` 冲突拒绝且不写入错误会话。两个点对相同片持有各自独立的交割身份，两份在途凭据分别可查。交割声明本身不产生字节收据，只有实际字节通过校验后才计入确认范围，发布条件与直接上传完全一致。
+
+HTTP 别名包括 `POST /collections/{c}/handoffs`、`POST /deposits/{id}/handoffs`（可用于检出误送）、`GET /handoffs/{hid}`、`PUT /handoffs/{hid}/parts/{digest}`、`GET /collections/{c}/batches/{token}` 与 `GET /deposits/{id}/readiness`（另有 `/relay/...`、`/transfers/...`、`/credentials/...` 等同义路径）。现场命令为 `python -m strata.field agent {receive,status,forward,sync,release,expire,pause,resume,receipt} --store DIR ...`。
+
 ## 取回与维护
 
 每个历史版本可按馆藏、版本号和清单摘要引用。可用 `GET /collections/{collection}/revisions/{number}/file?path=…` 取回单文件，支持单个字节范围。服务先核对组成该文件的全部字节，再发送成功响应。完整 ZIP 可通过同一路径下的 `package` 取回，附 `_vault/manifest.json` 和 `_vault/receipt.json`。`python -m strata.field verify` 需要已知的馆藏、版本和清单摘要，支持在验证成功后还原到新目录。外部传来的 ZIP 应使用已可信保存的引用核对。

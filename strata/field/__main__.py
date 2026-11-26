@@ -8,7 +8,7 @@ from strata.field.check import check_parcel
 from strata.field.parcel import DEFAULT_PART, build_parcel, open_parcel
 from strata.field.receive import verify_package
 from strata.field.uplink import Client, Uplink
-from strata.runtime.errors import VaultError
+from strata.runtime.errors import VaultError, invalid
 
 
 def parser() -> argparse.ArgumentParser:
@@ -43,6 +43,23 @@ def parser() -> argparse.ArgumentParser:
     receive.add_argument("--revision", required=True, type=int)
     receive.add_argument("--manifest-sha256", required=True)
     receive.add_argument("--extract", type=Path)
+
+    agent = commands.add_parser("agent", help="Operate a local relay (collection-on-behalf) point")
+    agent.add_argument("action", choices=(
+        "receive", "status", "forward", "sync", "release", "expire",
+        "pause", "resume", "receipt",
+    ))
+    agent.add_argument("parcel", type=Path, nargs="?")
+    agent.add_argument("--store", type=Path, required=True)
+    agent.add_argument("--point", "--agent", dest="point")
+    agent.add_argument("--vault-url")
+    agent.add_argument("--collection")
+    agent.add_argument("--token")
+    agent.add_argument("--receipt-id")
+    agent.add_argument("--publish", action="store_true")
+    agent.add_argument("--maximum-parts", type=int)
+    agent.add_argument("--retention", type=int)
+    agent.add_argument("--sync", action="store_true")
     return cli
 
 
@@ -62,6 +79,36 @@ def execute(options) -> dict:
         with Client(options.vault_url) as endpoint:
             return Uplink(endpoint).send(parcel, publish=not options.keep_open,
                                          maximum_parts=options.maximum_parts).as_dict()
+    if options.command == "agent":
+        from strata.field.agent import Agent
+
+        point = Agent(options.store, options.point)
+        action = options.action
+        if action == "receive":
+            if options.parcel is None:
+                raise invalid("agent receive requires a parcel path")
+            return point.accept(options.parcel).as_dict()
+        if action == "receipt":
+            return point.receipt(options.receipt_id or options.token).as_dict()
+        if action in ("pause", "resume"):
+            return (point.pause() if action == "pause" else point.resume()).as_dict()
+        if action == "expire":
+            return point.expire(options.retention).as_dict()
+        if action == "release":
+            return point.release(options.collection, options.token).as_dict()
+        if action == "status":
+            if options.vault_url and options.sync:
+                with Client(options.vault_url) as endpoint:
+                    return point.status(options.collection, options.token,
+                                        target=endpoint, sync=True).as_dict()
+            return point.status(options.collection, options.token).as_dict()
+        with Client(options.vault_url) as endpoint:
+            if action == "sync":
+                return point.sync(endpoint, collection=options.collection,
+                                  token=options.token).as_dict()
+            return point.forward(endpoint, collection=options.collection, token=options.token,
+                                 publish=options.publish,
+                                 maximum_parts=options.maximum_parts).as_dict()
     return verify_package(
         options.package, expected_manifest=options.manifest_sha256,
         expected_collection=options.collection, expected_revision=options.revision,

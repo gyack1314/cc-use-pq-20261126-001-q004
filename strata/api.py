@@ -170,4 +170,156 @@ def create_app(root: Path, *, clock=None) -> FastAPI:
     def footprint(collection: str):
         return vault.footprint.collection(collection)
 
+    # ---------------------------------------------------------- 代收转交
+
+    def _handoff_payload(body: dict | None) -> dict:
+        payload = dict(body or {})
+        payload.pop("collection", None)
+        return payload
+
+    def _declare(collection: str | None = None, deposit: str | None = None, body: dict | None = None):
+        payload = _handoff_payload(body)
+        if deposit is not None:
+            payload["deposit"] = deposit
+        return vault.relays.declare(collection, payload.pop("token", None), **payload)
+
+    @app.post("/handoffs", status_code=201)
+    def create_handoff(body: dict | None = None):
+        payload = _handoff_payload(body)
+        return vault.relays.declare(payload.pop("collection", None), payload.pop("token", None), **payload)
+
+    @app.post("/relay/handoffs", status_code=201)
+    def create_relay_handoff(body: dict | None = None):
+        return create_handoff(body)
+
+    @app.post("/agents/handoffs", status_code=201)
+    def create_agent_handoff(body: dict | None = None):
+        return create_handoff(body)
+
+    @app.post("/collections/{collection}/handoffs", status_code=201)
+    def collection_handoff(collection: str, body: dict | None = None):
+        return _declare(collection, body=body)
+
+    @app.post("/collections/{collection}/relay/handoffs", status_code=201)
+    def collection_relay_handoff(collection: str, body: dict | None = None):
+        return _declare(collection, body=body)
+
+    @app.post("/collections/{collection}/agents/handoffs", status_code=201)
+    def collection_agent_handoff(collection: str, body: dict | None = None):
+        return _declare(collection, body=body)
+
+    @app.post("/deposits/{deposit}/handoffs", status_code=201)
+    def deposit_handoff(deposit: str, body: dict | None = None):
+        return _declare(None, deposit=deposit, body=body)
+
+    @app.post("/deposits/{deposit}/relay", status_code=201)
+    def deposit_relay(deposit: str, body: dict | None = None):
+        return _declare(None, deposit=deposit, body=body)
+
+    @app.get("/handoffs/{handoff}")
+    def get_handoff(handoff: str):
+        return vault.relays.get(handoff)
+
+    @app.get("/relay/handoffs/{handoff}")
+    def get_relay_handoff(handoff: str):
+        return vault.relays.get(handoff)
+
+    @app.get("/credentials/{handoff}")
+    def get_credential(handoff: str):
+        return vault.relays.get(handoff)
+
+    @app.get("/agents/credentials/{handoff}")
+    def get_agent_credential(handoff: str):
+        return vault.relays.get(handoff)
+
+    async def _handoff_part(handoff: str, digest: str, request: Request):
+        size = await run_in_threadpool(vault.relays.required_size, handoff, digest)
+        with await uploaded(request, size, vault.delivery.scratch) as source:
+            return await run_in_threadpool(vault.relays.receive_part, handoff, digest, source)
+
+    @app.put("/handoffs/{handoff}/parts/{digest}")
+    async def put_handoff_part(handoff: str, digest: str, request: Request):
+        return await _handoff_part(handoff, digest, request)
+
+    @app.put("/relay/handoffs/{handoff}/parts/{digest}")
+    async def put_relay_handoff_part(handoff: str, digest: str, request: Request):
+        return await _handoff_part(handoff, digest, request)
+
+    @app.put("/credentials/{handoff}/parts/{digest}")
+    async def put_credential_part(handoff: str, digest: str, request: Request):
+        return await _handoff_part(handoff, digest, request)
+
+    @app.get("/collections/{collection}/batches/{token}")
+    def batch_status(collection: str, token: str):
+        return vault.relays.batch(collection, token)
+
+    @app.get("/collections/{collection}/relay/batches/{token}")
+    def relay_batch_status(collection: str, token: str):
+        return vault.relays.batch(collection, token)
+
+    @app.get("/collections/{collection}/tokens/{token}/readiness")
+    def token_readiness(collection: str, token: str):
+        return vault.relays.batch(collection, token)
+
+    @app.get("/deposits/{deposit}/readiness")
+    def deposit_readiness(deposit: str):
+        return vault.relays.batch(deposit=deposit)
+
+    @app.get("/deposits/{deposit}/relay")
+    def deposit_relay_view(deposit: str):
+        return vault.relays.batch(deposit=deposit)
+
+    @app.get("/deposits/{deposit}/custody")
+    def deposit_custody(deposit: str):
+        return vault.relays.custody(deposit=deposit)
+
+    @app.get("/deposits/{deposit}/handoffs")
+    def deposit_handoffs(deposit: str):
+        return vault.relays.list_handoffs(deposit=deposit)
+
+    @app.get("/collections/{collection}/handoffs")
+    def collection_handoffs(collection: str):
+        return vault.relays.list_handoffs(collection)
+
+    @app.get("/relay/copies/{digest}")
+    def relay_copies(digest: str):
+        return vault.relays.copies(digest)
+
+    # 其他常见资源命名的别名。
+    @app.post("/transfers", status_code=201)
+    def create_transfer(body: dict | None = None):
+        return create_handoff(body)
+
+    @app.post("/deposits/{deposit}/transfers", status_code=201)
+    def deposit_transfer(deposit: str, body: dict | None = None):
+        return _declare(None, deposit=deposit, body=body)
+
+    @app.post("/deposits/{deposit}/credentials", status_code=201)
+    def deposit_credential(deposit: str, body: dict | None = None):
+        return _declare(None, deposit=deposit, body=body)
+
+    @app.get("/transfers/{handoff}")
+    def get_transfer(handoff: str):
+        return vault.relays.get(handoff)
+
+    @app.get("/receipts/{handoff}")
+    def get_receipt_alias(handoff: str):
+        return vault.relays.get(handoff)
+
+    @app.put("/transfers/{handoff}/parts/{digest}")
+    async def put_transfer_part(handoff: str, digest: str, request: Request):
+        return await _handoff_part(handoff, digest, request)
+
+    @app.get("/deposits/{deposit}/status")
+    def deposit_status_view(deposit: str):
+        return vault.relays.batch(deposit=deposit)
+
+    @app.get("/deposits/{deposit}/summary")
+    def deposit_summary_view(deposit: str):
+        return vault.deposits.get(deposit)
+
+    @app.get("/collections/{collection}/tokens/{token}")
+    def token_batch_view(collection: str, token: str):
+        return vault.relays.batch(collection, token)
+
     return app
